@@ -6,7 +6,7 @@ on:
 jobs:
   build-and-record:
     name: Build programs and record hashes
-    runs-on: ubuntu-22.04 # pin to specific ubuntu version to prevent hash drift over time
+    runs-on: ubuntu-24.04 # pin to specific ubuntu version to prevent hash drift over time
     permissions:
       contents: write # required to create and update the build-hashes release
     steps:
