@@ -42,7 +42,7 @@ jobs:
       - name: Setup Anchor and Solana
         uses: metadaoproject/setup-anchor@aeeb5505f3fd3d52a1080d14863c6aa428c9fdf9 # v3.4
         with:
-          anchor-version: "0.32.1"
+          anchor-version: "0.31.1"
           solana-cli-version: "3.1.12"
 
       # Fix for https://github.com/solana-foundation/anchor/issues/3596
@@ -53,10 +53,10 @@ jobs:
           ANCHOR_SHA256: ${{ secrets.ANCHOR_SHA256 }}
         run: |
           set -euo pipefail
-          BIN="anchor-0.32.1-x86_64-unknown-linux-gnu"
+          BIN="anchor-0.31.1-x86_64-unknown-linux-gnu"
 
           curl --fail -L -o "$BIN" \
-            "https://github.com/solana-foundation/anchor/releases/download/v0.32.1/$BIN"
+            "https://github.com/solana-foundation/anchor/releases/download/v0.31.1/$BIN"
 
           ACTUAL_SHA256=$(sha256sum "$BIN" | cut -d' ' -f1)
           echo "SHA-256: $ACTUAL_SHA256"
@@ -88,7 +88,7 @@ jobs:
         run: |
           cat > Anchor.toml << 'EOF'
           [toolchain]
-          anchor_version = "0.32.1"
+          anchor_version = "0.31.1"
           solana_version = "3.1.12"
 
           [features]
