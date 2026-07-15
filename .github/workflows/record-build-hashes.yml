@@ -1,31 +1,50 @@
 name: Record Build Hashes
+
+# Runs automatically after every sync PR merges to main in the PUBLIC repo.
+# Builds all programs with anchor build, computes sha256sum of each .so, and
+# publishes SHA256SUMS as a GitHub Release asset tagged "build-hashes".
+# The private repo's verify-hash-parity.yml downloads this release asset via
+# the gh CLI to confirm hash parity before deploying to QA or Mainnet.
+#
+# Using a release asset (not a git commit) keeps the git history clean and
+# avoids the re-trigger loop that a bot commit to main would cause.
+#
+# This file lives in the PRIVATE repo and is copied to the PUBLIC repo by sync-to-public.yml.
+
 on:
   push:
     branches:
       - main
+
 jobs:
   build-and-record:
     name: Build programs and record hashes
     runs-on: ubuntu-24.04 # pin to specific ubuntu version to prevent hash drift over time
+
     permissions:
       contents: write # required to create and update the build-hashes release
+
     steps:
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           fetch-depth: 1 # shallow clone — full history is not needed to build and record hashes
+
       - name: Install build dependencies
         run: sudo apt-get update && sudo apt-get install -y build-essential pkg-config libssl-dev
+
       - name: Setup Rust
         # Reads toolchain version from rust-toolchain.toml — do NOT add a toolchain: override.
         # The rust-toolchain.toml is copied verbatim from the private repo during sync.
         # Both repos must compile with the identical Rust version for sha256 hashes to match.
         uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
+
       - name: Setup Anchor and Solana
         uses: metadaoproject/setup-anchor@aeeb5505f3fd3d52a1080d14863c6aa428c9fdf9 # v3.4
         with:
           anchor-version: "0.31.1"
           solana-cli-version: "2.3.0"
+
       # Fix for https://github.com/solana-foundation/anchor/issues/3596
       - name: Manually download Anchor binary
         env:
@@ -35,10 +54,13 @@ jobs:
         run: |
           set -euo pipefail
           BIN="anchor-0.31.1-x86_64-unknown-linux-gnu"
+
           curl --fail -L -o "$BIN" \
             "https://github.com/solana-foundation/anchor/releases/download/v0.31.1/$BIN"
+
           ACTUAL_SHA256=$(sha256sum "$BIN" | cut -d' ' -f1)
           echo "SHA-256: $ACTUAL_SHA256"
+
           if [ -n "$ANCHOR_SHA256" ]; then
             if [ "$ACTUAL_SHA256" != "$ANCHOR_SHA256" ]; then
               echo "ERROR: SHA-256 mismatch!"
@@ -51,31 +73,54 @@ jobs:
             echo "WARNING: ANCHOR_SHA256 secret not set — skipping hash verification."
             echo "Add the above SHA-256 as the ANCHOR_SHA256 secret to enable it."
           fi
+
           chmod +x "$BIN"
           ANCHOR_PATH="$(which anchor)"
           [ -n "$ANCHOR_PATH" ] || { echo "ERROR: anchor not found on PATH"; exit 1; }
           mv "$BIN" "$ANCHOR_PATH"
+
       - name: Generate minimal Anchor.toml
+        # anchor build requires Anchor.toml. The public repo does not have one (not synced
+        # from private). A minimal file is generated here. The [programs.devnet] section is
+        # intentionally omitted — anchor discovers programs from the workspace Cargo.toml.
+        # Program IDs are embedded via declare_id! in the source (synced from private) and
+        # are unaffected by Anchor.toml, so hashes are correct.
         run: |
           cat > Anchor.toml << 'EOF'
           [toolchain]
           anchor_version = "0.31.1"
           solana_version = "2.3.0"
+
           [features]
           resolution = true
           skip-lint = false
+
           [provider]
           cluster = "devnet"
           wallet = "/tmp/placeholder-wallet.json"
           EOF
           solana-keygen new --no-bip39-passphrase --outfile /tmp/placeholder-wallet.json --silent
+
+      - name: Print versions
+        run: |
+          rustc --version
+          cargo --version
+          anchor --version
+          solana --version
+
       - name: Build all programs
         run: anchor build
+
       - name: Generate SHA256SUMS
+        # Generates SHA256SUMS for the 3 deployed AbraFi product programs.
+        # Add abrafi_liquid_staking here once that program is deployed.
+        # Standard sha256sum format: "<hash>  <filename>" (two spaces).
+        # Comment lines (# prefix) are ignored by sha256sum -c and carry metadata.
         run: |
           set -euo pipefail
           COMMIT=$(git rev-parse HEAD)
           BUILT_AT=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
           {
             echo "# commit=${COMMIT}"
             echo "# built_at=${BUILT_AT}"
@@ -93,8 +138,10 @@ jobs:
               (cd target/deploy && sha256sum "${program}.so")
             done
           } > SHA256SUMS
+
           echo "Generated SHA256SUMS:"
           cat SHA256SUMS
+
       - name: Publish SHA256SUMS as release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -102,9 +149,11 @@ jobs:
           set -euo pipefail
           COMMIT_SHORT=$(git rev-parse --short HEAD)
           BUILT_AT=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
           # Delete the existing release + tag so only one copy is ever stored (no history bloat).
           # The || true ensures the step does not fail on the very first run when no release exists.
           gh release delete build-hashes --cleanup-tag --yes 2>/dev/null || true
+
           gh release create build-hashes SHA256SUMS \
             --title "SHA256SUMS (${COMMIT_SHORT})" \
             --notes "SHA256 checksums for AbraFi program binaries built from commit ${COMMIT_SHORT} at ${BUILT_AT}."
