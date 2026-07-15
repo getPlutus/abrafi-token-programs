@@ -136,6 +136,10 @@ jobs:
           echo "========== Workspace Members =========="
           cargo metadata --locked --no-deps
 
+      - name: Find dependency chain
+        run: |
+          cargo tree -i cpufeatures@0.3.0
+
       - name: Build all programs
         run: anchor build
 
