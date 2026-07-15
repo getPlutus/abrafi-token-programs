@@ -1,0 +1,110 @@
+name: Record Build Hashes
+on:
+  push:
+    branches:
+      - main
+jobs:
+  build-and-record:
+    name: Build programs and record hashes
+    runs-on: ubuntu-24.04 # pin to specific ubuntu version to prevent hash drift over time
+    permissions:
+      contents: write # required to create and update the build-hashes release
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 1 # shallow clone — full history is not needed to build and record hashes
+      - name: Install build dependencies
+        run: sudo apt-get update && sudo apt-get install -y build-essential pkg-config libssl-dev
+      - name: Setup Rust
+        # Reads toolchain version from rust-toolchain.toml — do NOT add a toolchain: override.
+        # The rust-toolchain.toml is copied verbatim from the private repo during sync.
+        # Both repos must compile with the identical Rust version for sha256 hashes to match.
+        uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
+      - name: Setup Anchor and Solana
+        uses: metadaoproject/setup-anchor@aeeb5505f3fd3d52a1080d14863c6aa428c9fdf9 # v3.4
+        with:
+          anchor-version: "0.31.1"
+          solana-cli-version: "2.3.0"
+      # Fix for https://github.com/solana-foundation/anchor/issues/3596
+      - name: Manually download Anchor binary
+        env:
+          # After the first run, copy the printed SHA-256 and add it as the
+          # ANCHOR_SHA256 secret to enable hash verification on future runs.
+          ANCHOR_SHA256: ${{ secrets.ANCHOR_SHA256 }}
+        run: |
+          set -euo pipefail
+          BIN="anchor-0.31.1-x86_64-unknown-linux-gnu"
+          curl --fail -L -o "$BIN" \
+            "https://github.com/solana-foundation/anchor/releases/download/v0.31.1/$BIN"
+          ACTUAL_SHA256=$(sha256sum "$BIN" | cut -d' ' -f1)
+          echo "SHA-256: $ACTUAL_SHA256"
+          if [ -n "$ANCHOR_SHA256" ]; then
+            if [ "$ACTUAL_SHA256" != "$ANCHOR_SHA256" ]; then
+              echo "ERROR: SHA-256 mismatch!"
+              echo "  Expected : $ANCHOR_SHA256"
+              echo "  Got      : $ACTUAL_SHA256"
+              exit 1
+            fi
+            echo "SHA-256 verified."
+          else
+            echo "WARNING: ANCHOR_SHA256 secret not set — skipping hash verification."
+            echo "Add the above SHA-256 as the ANCHOR_SHA256 secret to enable it."
+          fi
+          chmod +x "$BIN"
+          ANCHOR_PATH="$(which anchor)"
+          [ -n "$ANCHOR_PATH" ] || { echo "ERROR: anchor not found on PATH"; exit 1; }
+          mv "$BIN" "$ANCHOR_PATH"
+      - name: Generate minimal Anchor.toml
+        run: |
+          cat > Anchor.toml << 'EOF'
+          [toolchain]
+          anchor_version = "0.31.1"
+          solana_version = "2.3.0"
+          [features]
+          resolution = true
+          skip-lint = false
+          [provider]
+          cluster = "devnet"
+          wallet = "/tmp/placeholder-wallet.json"
+          EOF
+          solana-keygen new --no-bip39-passphrase --outfile /tmp/placeholder-wallet.json --silent
+      - name: Build all programs
+        run: anchor build
+      - name: Generate SHA256SUMS
+        run: |
+          set -euo pipefail
+          COMMIT=$(git rev-parse HEAD)
+          BUILT_AT=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          {
+            echo "# commit=${COMMIT}"
+            echo "# built_at=${BUILT_AT}"
+            for program in \
+              abrafi_backed_token \
+              abrafi_staking_rewards \
+              abrafi_yield_router; do
+              so="target/deploy/${program}.so"
+              if [ ! -f "$so" ]; then
+                echo "ERROR: expected binary not found: $so" >&2
+                exit 1
+              fi
+              # Run sha256sum from target/deploy so the output contains only the
+              # basename — sha256sum -c requires the filename to match exactly.
+              (cd target/deploy && sha256sum "${program}.so")
+            done
+          } > SHA256SUMS
+          echo "Generated SHA256SUMS:"
+          cat SHA256SUMS
+      - name: Publish SHA256SUMS as release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          COMMIT_SHORT=$(git rev-parse --short HEAD)
+          BUILT_AT=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          # Delete the existing release + tag so only one copy is ever stored (no history bloat).
+          # The || true ensures the step does not fail on the very first run when no release exists.
+          gh release delete build-hashes --cleanup-tag --yes 2>/dev/null || true
+          gh release create build-hashes SHA256SUMS \
+            --title "SHA256SUMS (${COMMIT_SHORT})" \
+            --notes "SHA256 checksums for AbraFi program binaries built from commit ${COMMIT_SHORT} at ${BUILT_AT}."
