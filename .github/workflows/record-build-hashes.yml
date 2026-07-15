@@ -108,12 +108,38 @@ jobs:
           anchor --version
           solana --version
 
+      - name: Debug Cargo dependency resolution
+        run: |
+          set -euxo pipefail
+
+          echo "========== Tool Versions =========="
+          rustc --version
+          cargo --version
+          anchor --version
+          solana --version
+
+          echo ""
+          echo "========== Cargo.lock =========="
+          grep -A5 'name = "cpufeatures"' Cargo.lock || true
+
+          echo ""
+          echo "========== Workspace =========="
+          cat Cargo.toml
+
+          echo ""
+          echo "========== Cargo Metadata (Locked) =========="
+          cargo metadata --locked --format-version=1 > /tmp/meta.json
+
+          grep -o '"name":"cpufeatures","version":"[^"]*"' /tmp/meta.json | sort -u || true
+
+          echo ""
+          echo "========== Workspace Members =========="
+          cargo metadata --locked --no-deps
+
       - name: Build all programs
         run: anchor build
 
       - name: Generate SHA256SUMS
-        # Generates SHA256SUMS for the 3 deployed AbraFi product programs.
-        # Add abrafi_liquid_staking here once that program is deployed.
         # Standard sha256sum format: "<hash>  <filename>" (two spaces).
         # Comment lines (# prefix) are ignored by sha256sum -c and carry metadata.
         run: |
@@ -126,6 +152,7 @@ jobs:
             echo "# built_at=${BUILT_AT}"
             for program in \
               abrafi_backed_token \
+              abrafi_staking_liquid \
               abrafi_staking_rewards \
               abrafi_yield_router; do
               so="target/deploy/${program}.so"
